@@ -2,7 +2,7 @@
     f2lp.c - This program turns first order formulas to 
              answer set programs under the stable model semantics.    
 
-    version 1.11         05-Mar-2011
+    version 1.2         15-Oct-2011
 
     Copyright (C) <2009>  <Joohyung Lee and Ravi Palla>
                 All rights reserved.
@@ -25,12 +25,15 @@
     the "COPYRIGHT" file provided along with this software.
 *********************************************************************/
 
+
+////NOTE TO SELF: ASP BLOCK DOES NOT WORK WHEN IT IS THE LAST ELEMENT
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
 
-#define VERSION "f2lp version 1.11"
+#define VERSION "f2lp version 1.2"
 #define USAGE "f2lp [input_file_1] . . . [input_file_n]\n"
 #define NOINPUTFILE "if no input files are provided, then STDIN is considered.\n" 
 #define OPTION_HELP "usage information: -h --h -help --help\n"
@@ -193,7 +196,7 @@ nextchar = prefix[index_prefix++];
 // putchar(nextchar);
 
 if (nextchar == '\0') {
-fprintf(stderr, "Premature end of formula.\n");
+fprintf(stderr, "Premature end of formula. \n");
 exit(1);
 }
 /*
@@ -3580,7 +3583,7 @@ int isDomain ( char *buf, int index )
 /* checks for the second string (either mod, pow, abs or assign) starting from index */
 int isEqual ( char *buf, int index, char *target )
 {
-	char keyString[10] = {'\0'};
+	char keyString[16] = {'\0'};//changed from 10 to 16 to accomodate LUA
 	int i = 0;
 
 	while ( (target[i] != '\0') && (buf[index] != '\0') )
@@ -3606,6 +3609,23 @@ int isNewFormula ( char *buf, int index )
 	predString[7] = '\0';
 
 	if ( !strcmp(predString,"newpred") && (buf[index] == ' ') )
+		return 1;
+
+	return 0;
+}
+
+/* checks if it is a special atom that should not be processed */
+int isSpAtom ( char *buf, int index )
+{
+	char predString[7] = {'\0'};
+	int i = 0;
+
+	while ( (buf[index] != '\0') && (i != 6) )
+		predString[i++] = buf[index++];
+
+	predString[6] = '\0';
+
+	if ( !strcmp(predString,"spatom") && ((buf[index] == ' ') || (buf[index] == '{')) )
 		return 1;
 
 	return 0;
@@ -3967,6 +3987,13 @@ for (var_index = 0; var_index < end_index-start_index; var_index++)
 strcpy(dest, "_agg_exp_");
 strcat(dest, itoa(agg_index, 10));
 agg_index++;
+
+/* if it is a special atom, then no arguments are necessary */
+if (isSpAtom(buf,start_index+1))
+{
+	return;
+}
+
 
 /* first find if it is a dlv aggregate or lparse aggregate */
 index = start_index;
@@ -4507,6 +4534,94 @@ printf("after substitution %s\n", buf);
 free(subsAtom);
 }
 
+int isArrowImp(char first, char sec)
+{
+	if (first == '-' && sec == '>')
+		return 1;
+	if ( first == '<' && sec == '-')
+		return 1;
+	return 0;
+}
+
+
+void getEquivalenceScope (char *str, int index, int *start_equivalence, int *end_equivalence)
+{
+	int temp_index = index;
+	int paran_count = 0;
+	
+	while (temp_index > 0)
+	{
+		if ((paran_count == 0) && (isArrowImp(str[temp_index-1],str[temp_index])))
+		{
+			*start_equivalence = temp_index + 1;
+			break;
+		}
+		
+		if (str[temp_index] == '(')
+		{
+			paran_count++;
+			if ( paran_count > 0 )
+			{
+				*start_equivalence = temp_index + 1;
+				break;
+			}
+		}
+		if (str[temp_index] == ')')
+			paran_count--; 
+			
+		temp_index--;
+	}
+
+	if (temp_index == 0)
+	{
+		if (str[temp_index] == '(')
+		{
+			paran_count++;
+			if ( paran_count > 0 )
+			{
+				*start_equivalence = temp_index + 1;
+			}
+			else
+			{
+				*start_equivalence = 0;
+			}
+		}
+		else
+		{
+			*start_equivalence = 0;
+		}
+	}
+	
+	temp_index = index+3;
+	paran_count = 0;
+	
+	while (str[temp_index] != '\0')
+	{
+		if ((paran_count == 0) && (isArrowImp(str[temp_index],str[temp_index+1])))
+		{
+			*end_equivalence = temp_index - 1;
+			break;
+		}
+		if (str[temp_index] == '(')
+			paran_count++;
+		if (str[temp_index] == ')')
+		{
+			paran_count--; 
+			if ( paran_count < 0 )
+			{
+				*end_equivalence = temp_index - 1;
+				break;
+			}
+		}
+			
+		temp_index++;
+	}
+	if (str[temp_index] == '\0')
+		*end_equivalence = temp_index - 1;
+}
+
+
+
 int
 main(int argc, char *argv[])
 {
@@ -4536,10 +4651,17 @@ char           *barStringbar = NULL;
 
 int             orig_lineNum = 0;
 int             dlv_rule = 0;
+int             sp_atom = 0;
 int 				 f2lp_rule = 0;
 int             extensional = -1;
 int             paran_count = 0;
+int             square_paran_count = 0;
+int             flower_paran_count = 0;
 int             paran_mismatch_line = 0;
+int             inLua = 0;//ADDED
+int             outLua = 0;//ADDED
+int		inASP = 0;//ADDED
+int		outASP = 0;//ADDED
 int             size_incr = 0;
 int             solver_supported = 0;
 int             comment = 0;
@@ -4559,6 +4681,11 @@ int 				 implication = 0;
 int 				 classical_option = 0;
 int				 default_option = 0;
 int 				 force_default_option = 0;
+int 				 equivalence_found = 0;
+int 				 temp_line_index = 0;
+int 				 temp_line_index1 = 0;
+int 				 start_equivalence = 0;
+int 				 end_equivalence = 0;
 
 char           *inF = NULL; // (char *)&formula;
 char           *prefixF = NULL;
@@ -4572,6 +4699,15 @@ char 				*warningmsg3 =
 "\% WARNING: Neither F2LP arrow '<-' nor implication was found. Treating '-' as classical negation. Please use the option -d if you would like '-' to be treated as default negation.";
 
 char 				exchange_char = '\0';
+
+char beginlua[] = "#begin_lua";//ADDED
+char endlua[] = "#end_lua.";//ADDED
+char beginASP[] = "#begin_asp";//ADDED
+char endASP[] = "#end_asp.";//ADDED
+//char f2lpluabegin[] = "#f2lp_lua_begin";//ADDED
+//char f2lpluaend[] = "#f2lp_lua_end";//ADDED
+		
+
 #ifdef DEBUG
 printf("Max Line Size %d\n",LINE_MAX);
 printf("Max Predicate Length %d\n",MAX_PREDICATE_LENGTH);
@@ -4752,6 +4888,7 @@ fprintf(stderr,"file open failed\n");
 return 1;
 }
 
+
 /* if no option is used, then determine how to treat '-' */
 if ( !classical_option && !default_option )
 {
@@ -4808,8 +4945,26 @@ if (readBuf == '<')
 	}
 	if (readBuf == '-')
 	{
-		f2lp_arrow = 1;
-		break;
+		ret = fread(&readBuf,1,1,fp);
+		if ( ret == 0 )
+		{
+			if (!feof(fp))
+			{
+				fprintf(stderr,"read from input failed\n");
+				exit(1);
+			}
+		
+			break;
+		}
+		if ( readBuf != '>' )
+		{
+			f2lp_arrow = 1;
+			break;
+		}
+		else
+		{
+			implication = 1;
+		}
 	}
 }
 
@@ -4880,6 +5035,7 @@ while (1) {
 i = 0;
 k = 0;
 dlv_rule = 0;
+sp_atom = 0;
 f2lp_rule = 0;
 extensional = -1;
 force_default_option = 0;
@@ -4899,6 +5055,8 @@ line_index = 0;
 temp_buffer_index = 0;
 comment = 0;
 paran_count = 0;
+flower_paran_count = 0;
+square_paran_count = 0;
 	
 do
 {
@@ -4930,22 +5088,117 @@ do
 	if ( (readBuf == ')') && (comment == 0) )
 	{
 		paran_count--;
-	}	
+	}
 	
-	if ( (readBuf != '.') || (paran_count != 0) )
+	if ( (readBuf == '{') && (comment == 0) )
+	{
+		flower_paran_count++;
+	}
+
+	if ( (readBuf == '}') && (comment == 0) )
+	{
+		flower_paran_count--;
+	}	
+	if ( (readBuf == '[') && (comment == 0) )
+	{
+		square_paran_count++;
+	}
+
+	if ( (readBuf == ']') && (comment == 0) )
+	{
+		square_paran_count--;
+	}
+
+
+	//ADDED THE BELOW
+	if ( (readBuf == '#') && (comment == 0) && inLua == 0 && inASP == 0)
+	{
+		inLua++;//This might be the start of a lua begin tag
+	}
+
+	if ( (readBuf != '#') && (comment == 0) && inLua > 0 && inLua < 10)
+	{
+		if (beginlua[inLua] == readBuf)
+			inLua++;//this continues to look like a lua begin tag
+		else 
+			inLua = 0;//this is not a lua begin tag, wipe the value clean
+	}
+
+	if ( (readBuf == '#') && (comment == 0) && inLua == 10)//now that we have seen a lua begin tag
+	{
+
+		outLua++;//this might be a lua end tag
+	}
+
+	if ( (readBuf != '#') && (comment == 0) && outLua > 0 && outLua < 9)
+	{
+		
+		if (endlua[outLua] == readBuf)
+			outLua++;//this continues to look like a lua end tag
+		else 
+			outLua = 0;//this is not a lua end tag, wipe the value clean
+		if(outLua == 9)//this was a full lua end tag
+		{
+			inLua = 0;//we are no longer in a lua section, return to reading as normal
+			line[line_index++]='.';//need to add this period since the blow logic will ignore the period on the end lua tag
+			outLua = 0;
+		}
+	}
+
+
+	if ( (readBuf == '#') && (comment == 0) && inASP == 0)
+	{
+		inASP++;//This might be the start of an asp begin tag
+	}
+
+	if ( (readBuf != '#') && (comment == 0) && inASP > 0 && inASP < 10)
+	{
+		if (beginASP[inASP] == readBuf)
+			inASP++;//this continues to look like an asp begin tag
+		else 
+			inASP = 0;//this is not an asp begin tag, wipe the value clean
+	}
+
+	if ( (readBuf == '#') && (comment == 0) && inASP == 10)//now that we have seen an asp begin tag
+	{
+
+		outASP++;//this might be an asp end tag
+	}
+
+	if ( (readBuf != '#') && (comment == 0) && outASP > 0 && outASP < 9)
+	{
+		
+		if (endASP[outASP] == readBuf)
+			outASP++;//this continues to look like an asp end tag
+		else 
+			outASP = 0;//this is not an asp end tag, wipe the value clean
+		if(outASP == 9)//this was a full asp end tag
+		{
+			inASP = 0;//we are no longer in an asp section, return to reading as normal
+			line[line_index++]='.';//need to add this period since the blow logic will ignore the period on the end asp tag
+			outASP = 0;
+		}
+	}
+	//ADDED THE ABOVE
+
+
+
+	if ( (readBuf != '.') || (paran_count != 0) || (flower_paran_count != 0) || (square_paran_count != 0) || (inLua != 0) || (inASP != 0) )//CHANGED THIS; when in a lua/asp section, we need to consume all symbols--specifically periods.
 		line[line_index++] = readBuf;
 	
 	/* in case of dlv rules, to avoid duplication of comments */	
-	if ( ( ( (readBuf != '.') || (paran_count != 0) )  && (comment == 0)) && (readBuf != '\n') )
+	if ( ( ( (readBuf != '.') || (paran_count != 0) || (flower_paran_count != 0) || (square_paran_count != 0) )  
+		&& (comment == 0)) && (readBuf != '\n') )
 		temp_buffer[temp_buffer_index++] = readBuf;
-	
-}while((readBuf != '.')||(comment == 1) || (paran_count != 0));
 
+	
+	
+}while((readBuf != '.')||(comment == 1) || (paran_count != 0) || (flower_paran_count != 0) || (square_paran_count != 0) || (inLua != 0) || (inASP != 0) );//CHANGED THIS; when in a lua/asp section, we need to consume all symbols--specifically periods.
 
 /* if EOF and read failed */
 if (ret == 0)
 {
-	if ( paran_count != 0 )
+	if ( (paran_count != 0) || (square_paran_count != 0) || (flower_paran_count != 0) )
 	{
 		fprintf (stderr,"parse error at line %d : no matching parenthesis found.\n", paran_mismatch_line+1);
 		exit(1);
@@ -4972,9 +5225,108 @@ temp_buffer_size = temp_buffer_index;
 // printf("%d\n",line_size);
 
 line_index = 0;
+equivalence_found = 0;
+/* replace equivalence with conjunction of implications */
+do
+{
+line_index = 0;
+equivalence_found = 0;
+while (line_index < line_size)
+{
+	if ( (line[line_index] == '<') && (line[line_index + 1] == '-') )
+	{
+		if (line[line_index + 2] == '>')
+		{
+			/* equivalence */
+			equivalence_found = 1;
+			getEquivalenceScope(line,line_index,&start_equivalence,&end_equivalence);
+#ifdef DEBUG
+			printf("scope of equivalence for formula %s: start index = %d, end index = %d\n", line, start_equivalence, end_equivalence);
+#endif
+			
+			/* using inF as temp buffer */
+			temp_line_index = 0;
+			temp_line_index1 = 0;
+			while ( temp_line_index1 < start_equivalence )
+			{
+				inF[temp_line_index] = line[temp_line_index1];
+				temp_line_index++;
+				temp_line_index1++;
+			}
+			inF[temp_line_index++] = '(';
+			inF[temp_line_index++] = '(';
+			while (temp_line_index1 < line_index)
+			{
+				inF[temp_line_index] = line[temp_line_index1];
+				temp_line_index++;
+				temp_line_index1++;
+			}
+			inF[temp_line_index++] = '-';
+			inF[temp_line_index++] = '>';
+			temp_line_index1 = line_index + 3;
+			while (temp_line_index1 < end_equivalence)
+			{
+				inF[temp_line_index] = line[temp_line_index1];
+				temp_line_index++;
+				temp_line_index1++;
+			}
+			inF[temp_line_index++] = line[temp_line_index1];
+			inF[temp_line_index++] = ')'; /* ((F -> G) done*/
+			inF[temp_line_index++] = '&';
+			
+			temp_line_index1 = line_index + 3;
+			inF[temp_line_index++] = '(';
+			while (temp_line_index1 < end_equivalence)
+			{
+				inF[temp_line_index] = line[temp_line_index1];
+				temp_line_index++;
+				temp_line_index1++;
+			} 
+			inF[temp_line_index++] = line[temp_line_index1];
+			inF[temp_line_index++] = '-';
+			inF[temp_line_index++] = '>';
+			temp_line_index1 = start_equivalence;
+			while (temp_line_index1 < line_index)
+			{
+				inF[temp_line_index] = line[temp_line_index1];
+				temp_line_index++;
+				temp_line_index1++;
+			}
+			inF[temp_line_index++] = ')';
+			inF[temp_line_index++] = ')';
+			
+			temp_line_index1 = end_equivalence + 1;
+			while (temp_line_index1 < line_size)
+			{
+				inF[temp_line_index] = line[temp_line_index1];
+				temp_line_index++;
+				temp_line_index1++;
+			}
+			inF[temp_line_index] = '\0';
+			line_size = temp_line_index;
+			/* copy back to line */
+			line_index = 0;
+			while (line_index < line_size)
+			{
+				line[line_index] = inF[line_index];
+				line_index++;
+			}
+			line[line_index] = '\0';
+			break;
+		}
+	}
+	line_index++;
+}
+}while(equivalence_found == 1);
+
+#ifdef DEBUG
+	printf("After eliminating equivalences: %s",line);
+#endif
+
+line_index = 0;
 
 /*
-* some initial processing for comments and LP rules 
+* some initial processing for comments, LP rules and equivalence 
 */
 while (line_index < line_size) {
 readBuf = line[line_index++];
@@ -5039,6 +5391,11 @@ if (readBuf == '%')
 */
 if (readBuf == '#')
 {
+	if ( (readBuf == '#') && isSpAtom(line,line_index) )
+	{
+		sp_atom = 1;
+	}
+	
 	if ( (readBuf == '#') && isExtensional(line,line_index) )
 	{
 		extensional = line_index;
@@ -5061,6 +5418,128 @@ if (readBuf == '#')
 		force_default_option = 1;
 		dlv_rule = 1;
 	}
+
+	if(isEqual(line,line_index,"begin_lua"))	
+	{
+
+		line_index = line_index + 9;//skip over the #begin_lua tag
+		readBuf = line[line_index];
+		ret = fwrite(&beginlua,1,10,fpSolverInput);//write the ASP #begin_lua tag
+		
+		if ( ret == 0 )
+		{
+			fprintf(stderr,"write to output failed\n");
+			exit(1);
+		}
+		/* copy to output and ignore until end of lua block */
+		do
+		{
+			ret = fwrite(&readBuf,1,1,fpSolverInput);
+			if ( ret == 0 )
+			{
+				fprintf(stderr,"write to output failed\n");
+				exit(1);
+			}
+			readBuf = line[++line_index];	
+			//line_index++;
+			if (line_index == line_size)
+			{
+				/* write the last character */
+				ret = fwrite(&readBuf,1,1,fpSolverInput);
+				if ( ret == 0 )
+				{
+					fprintf(stderr,"write to output failed\n");
+					exit(1);
+				}
+				break;
+			}
+			
+		}while(!isEqual(line,line_index,"#end_lua."));
+
+		if(isEqual(line,line_index,"#end_lua."))
+		{
+			line_index = line_index + 9;//skip over the f2lp_end_lua tag
+			
+			ret = fwrite(&endlua,1,9,fpSolverInput);//write the ASP #end_lua. tag
+			if ( ret == 0 )
+			{
+				fprintf(stderr,"write to output failed\n");
+				exit(1);
+			}
+		}
+		else
+		{	
+			fprintf(stderr,"Failed to find end of lua block\n");
+			exit(1);
+		}
+
+		ret = fwrite("\n",1,1,fpSolverInput);
+		if ( ret == 0 )
+		{
+			fprintf(stderr,"write to output failed\n");
+			exit(1);
+		}
+		continue;
+	}//ADDED
+
+
+
+	if(isEqual(line,line_index,"begin_asp"))	
+	{
+
+		line_index = line_index + 9;//skip over the asp tag
+		readBuf = line[line_index];
+		
+		if ( ret == 0 )
+		{
+			fprintf(stderr,"write to output failed\n");
+			exit(1);
+		}
+		/* copy to output and ignore until end of asp block */
+		do
+		{
+			ret = fwrite(&readBuf,1,1,fpSolverInput);
+			if ( ret == 0 )
+			{
+				fprintf(stderr,"write to output failed\n");
+				exit(1);
+			}
+			readBuf = line[++line_index];	
+			//line_index++;
+			if (line_index == line_size)
+			{
+				/* write the last character */
+				ret = fwrite(&readBuf,1,1,fpSolverInput);
+				if ( ret == 0 )
+				{
+					fprintf(stderr,"write to output failed\n");
+					exit(1);
+				}
+				break;
+			}
+			
+		}while(!isEqual(line,line_index,"#end_asp."));
+
+		if(isEqual(line,line_index,"#end_asp."))
+		{
+			line_index = line_index + 9;//skip over the end asp
+		}
+		else
+		{	
+			fprintf(stderr,"Failed to find end of asp block\n");
+			exit(1);
+		}
+
+		ret = fwrite("\n",1,1,fpSolverInput);
+		if ( ret == 0 )
+		{
+			fprintf(stderr,"write to output failed\n");
+			exit(1);
+		}
+		continue;
+	}
+
+
 	
 } 
 if (readBuf == ';')
@@ -5078,13 +5557,14 @@ dlv_rule = 1;
 
 }
 
-/* check for F2LP rules */
+/* check for F2LP rules and equivalence*/
 if ( (readBuf == '<') && (line[line_index] == '-') )
 {
-	/* possible F2LP rule */
-	f2lp_rule = 1;
-	/* mark the index */
-	rule_arrow_index = i;
+	
+		f2lp_rule = 1;
+		/* mark the index */
+		rule_arrow_index = i;
+	
 }
 
 
@@ -5214,7 +5694,7 @@ inF[i] = '\0';
 /*
 * if LP rule, write the line to output file and continue 
 */
-if (dlv_rule == 1)
+if ( (dlv_rule == 1) && (sp_atom != 1) )
 {
 	if ( force_default_option == 1 )
 		continue;
@@ -6361,6 +6841,7 @@ else if ((root->right->val[0] == '|') &&
 	/*
 	* form a new tree for R3 and recurse 
 	*/
+
 	temp1 = (NODEP) malloc(sizeof(struct node));
 	temp2 = (NODEP) malloc(sizeof(struct node));
 	temp5 = (NODEP) malloc(sizeof(struct node));
@@ -8246,6 +8727,25 @@ if (isAggExp(head, i, agg_exp))
 	while (orig_agg_exp[index] != '\0')
 	{
 		writeBuf = orig_agg_exp[index];
+		/* if special atom, then write only the atom part */
+		if ( (writeBuf == '#') && isSpAtom(orig_agg_exp,index+1) )
+		{
+			while (orig_agg_exp[index] != '{')
+				index++;
+
+			index++;
+			while ( (orig_agg_exp[index] != '}') && (orig_agg_exp[index] != '\0') )
+			{
+				writeBuf = orig_agg_exp[index];
+				ret = fwrite(&writeBuf, 1, 1, fpSolverInput);
+				if (ret == 0) {
+					fprintf(stderr,"write to output file failed\n");
+					exit(1);
+				}
+				index++;
+			}
+			break;
+		}
 		if (writeBuf == '~')
 			writeBuf = '-';
 		ret = fwrite(&writeBuf, 1, 1, fpSolverInput);
@@ -8314,6 +8814,26 @@ if (isAggExp(body, i, agg_exp))
 	while (orig_agg_exp[index] != '\0')
 	{
 		writeBuf = orig_agg_exp[index];
+		
+		/* if special atom, then write only the atom part */
+		if ( (writeBuf == '#') && isSpAtom(orig_agg_exp,index+1) )
+		{
+			while (orig_agg_exp[index] != '{')
+				index++;
+
+			index++;
+			while ( (orig_agg_exp[index] != '}') && (orig_agg_exp[index] != '\0') )
+			{
+				writeBuf = orig_agg_exp[index];
+				ret = fwrite(&writeBuf, 1, 1, fpSolverInput);
+				if (ret == 0) {
+					fprintf(stderr,"write to output file failed\n");
+					exit(1);
+				}
+				index++;
+			}
+			break;
+		}
 		if (writeBuf == '~')
 			writeBuf = '-';
 		ret = fwrite(&writeBuf, 1, 1, fpSolverInput);
