@@ -3535,6 +3535,18 @@ elim_quantifier (struct node **root, int in_incremental_section, char *increment
 					fprintf(stderr,"writing to tmp file failed. Check permissions\n");
 					exit(1);
 				}
+				if(in_incremental_section) {
+					ret = fwrite("#base.", 1, sizeof("#base.") - 1, fp);
+					if (ret == 0) {
+						fprintf(stderr,"writing to tmp file failed. Check permissions\n");
+						exit(1);
+					}
+					ret = fwrite("\n", 1, sizeof("\n") - 1, fp);
+					if (ret == 0) {
+						fprintf(stderr,"writing to tmp file failed. Check permissions\n");
+						exit(1);
+					}
+				}
 				fclose(fp);
 				
 				/* replace quantified formula by --_new_pred_ / _new_pred_ (if not S.P) */
