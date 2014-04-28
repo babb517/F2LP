@@ -5197,6 +5197,13 @@ do
 	if ( readBuf == '%' )
 		comment = 1;
 	
+	if ( readBuf == '\r' )
+	{
+		// strip windows style line ending characters as the program doesn't handle them gracefully
+		readBuf = ' ';
+	}
+
+
 	if ( readBuf == '\n' )
 	{
 		comment = 0;
@@ -5666,9 +5673,38 @@ if (readBuf == '#')
 		continue;
 	}
 
+	// JOE: ADDED BELOW FOR CORRECT SPATOM HANDLING
+	if(sp_atom)	
+	{
+		inF[i++] = '#';
+		do {
+			readBuf = line[line_index++];
+			if (readBuf != ' ' && readBuf != '\t') 
+					inF[i++] = readBuf;
+		} while  (readBuf != '{');
 
-	
-} 
+
+		/* copy to output and ignore until } */
+		do
+		{
+			readBuf = line[line_index++];
+			inF[i++] = readBuf;
+			
+		} while(readBuf != '}' && line_index != line_size);
+
+		if (readBuf != '}')
+		{	
+			fprintf(stderr,"Failed to find end of spatom block\n");
+			exit(1);
+		} 
+		readBuf = line[line_index++];
+		continue;
+	}
+
+}
+
+
+ 
 if (readBuf == ';')
 	dlv_rule = 1;
 		
